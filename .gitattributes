@@ -1,0 +1,3 @@
+*.js linguist-language=abap
+*.css linguist-language=abap
+*.html linguist-language=abap
