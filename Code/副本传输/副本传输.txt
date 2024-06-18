@@ -1,0 +1,230 @@
+*&---------------------------------------------------------------------*
+*& Report ZTRANSTASK
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT ztranstask NO STANDARD PAGE HEADING.
+TYPE-POOLS: trwbo.
+TABLES: e070,sscrfields,rfcdes.
+CONSTANTS: c_targ TYPE tr_target VALUE 'QAS',
+           c_clnt TYPE mandt     VALUE '600',
+           c_dest TYPE rfcdest   VALUE 'DEV_100@QAS_600'.
+DATA: tr_text TYPE as4text.
+DATA: header  TYPE trwbo_request_header.
+DATA: retcode TYPE stpa-retcode.
+DATA: return  TYPE TABLE OF bapiret2 WITH HEADER LINE.
+DATA: BEGIN OF lt_task OCCURS 0,
+        request TYPE e070-trkorr,
+        tasknum TYPE e070-trkorr,
+      END OF lt_task.
+
+SELECTION-SCREEN FUNCTION KEY 1.
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE btxt1.
+  SELECT-OPTIONS: s_trkor FOR e070-trkorr NO INTERVALS.
+  PARAMETERS: p_arget TYPE tr_target OBLIGATORY DEFAULT c_targ MODIF ID a,
+              p_mandt TYPE sy-mandt DEFAULT c_clnt,
+              p_trkor TYPE e070-trkorr MODIF ID a.
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE btxt2.
+  PARAMETERS: p_relse AS CHECKBOX USER-COMMAND uc,
+              p_trmit AS CHECKBOX DEFAULT 'X',
+              p_delbf AS CHECKBOX DEFAULT 'X',
+              p_delrq AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK b2.
+
+AT SELECTION-SCREEN OUTPUT.
+  btxt1 = 'TASK'.
+  btxt2 = '选项'.
+  sscrfields-functxt_01  = '@0P@ 查看传输日志'.
+  %_s_trkor_%_app_%-text = 'TaskNumber(任务号)'.
+  %_p_arget_%_app_%-text = '目标系统'.
+  %_p_mandt_%_app_%-text = '目标客户端'.
+  %_p_relse_%_app_%-text = '@4A@释放TASK'.
+  %_p_trmit_%_app_%-text = '@KB@调整导入队列'.
+  %_p_trkor_%_app_%-text = '副本请求'.
+  %_p_delbf_%_app_%-text = '传输完在目标系统删除传输记录'.
+  %_p_delrq_%_app_%-text = '传输成功删除本系统副本请求'.
+  LOOP AT SCREEN.
+    IF screen-group1 CA 'A'.
+      screen-input = '0'.
+    ENDIF.
+    MODIFY SCREEN.
+  ENDLOOP.
+
+AT SELECTION-SCREEN .
+  IF sy-ucomm = 'ONLI'.
+    IF s_trkor[] IS INITIAL.
+      MESSAGE s000(oo) WITH '请输入任务号'.
+      STOP.
+    ELSE.
+      SELECT * FROM e070 WHERE trkorr IN s_trkor.
+        IF e070-strkorr = ''.
+          MESSAGE s000(oo) WITH '本程序只能处理任务号，不可包含请求号'.
+          STOP.
+        ENDIF.
+        CONCATENATE tr_text '/' e070-trkorr INTO tr_text.
+
+        lt_task-request = e070-strkorr.
+        lt_task-tasknum = e070-trkorr.
+        COLLECT lt_task.
+      ENDSELECT.
+      SHIFT tr_text.
+      CONCATENATE '副本传输:' tr_text INTO tr_text.
+
+      CALL FUNCTION 'TR_INSERT_REQUEST_WITH_TASKS'
+        EXPORTING
+          iv_type           = 'T'
+          iv_text           = tr_text
+          iv_target         = p_arget
+        IMPORTING
+          es_request_header = header
+        EXCEPTIONS
+          insert_failed     = 1
+          enqueue_failed    = 2
+          OTHERS            = 3.
+      IF sy-subrc <> 0.
+        MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+              WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4  .
+      ELSE.
+        p_trkor = header-trkorr.
+        COMMIT WORK AND WAIT .
+      ENDIF.
+    ENDIF.
+  ELSEIF sy-ucomm = 'FC01'.
+    CHECK p_trkor IS NOT INITIAL.
+    CALL FUNCTION 'TMS_UI_SHOW_TRANSPORT_LOGS'
+      EXPORTING
+        iv_request                 = p_trkor
+      EXCEPTIONS
+        show_transport_logs_failed = 1
+        OTHERS                     = 2.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4  .
+    ENDIF.
+  ENDIF.
+
+START-OF-SELECTION.
+  IF p_relse = 'X'.
+    LOOP AT lt_task.
+      SET UPDATE TASK LOCAL.
+      CALL FUNCTION 'BAPI_CTREQUEST_RELEASE'
+        EXPORTING
+          requestid = lt_task-request
+          taskid    = lt_task-tasknum
+        IMPORTING
+          return    = return.
+    ENDLOOP.
+  ENDIF.
+
+  LOOP AT lt_task.
+    CALL FUNCTION 'TR_COPY_COMM'
+      EXPORTING
+        wi_dialog                = ''
+        wi_trkorr_from           = lt_task-tasknum
+        wi_trkorr_to             = header-trkorr
+        wi_without_documentation = 'X'
+      EXCEPTIONS
+        db_access_error          = 1
+        trkorr_from_not_exist    = 2
+        trkorr_to_is_repair      = 3
+        trkorr_to_locked         = 4
+        trkorr_to_not_exist      = 5
+        trkorr_to_released       = 6
+        user_not_owner           = 7
+        no_authorization         = 8
+        wrong_client             = 9
+        wrong_category           = 10
+        object_not_patchable     = 11.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4  .
+    ENDIF.
+  ENDLOOP.
+  COMMIT WORK.
+
+  CALL FUNCTION 'TR_SORT_AND_COMPRESS_COMM'
+    EXPORTING
+      iv_trkorr                      = header-trkorr
+    EXCEPTIONS
+      trkorr_not_found               = 1
+      order_released                 = 2
+      error_while_modifying_obj_list = 3
+      tr_enqueue_failed              = 4
+      no_authorization               = 5.
+  COMMIT WORK .
+
+  CALL FUNCTION 'TRINT_RELEASE_REQUEST'
+    EXPORTING
+      iv_trkorr                   = header-trkorr
+      iv_dialog                   = ''
+      iv_as_background_job        = ''
+      iv_success_message          = 'X'
+      iv_without_objects_check    = 'X'
+      iv_without_locking          = 'X'
+      iv_display_export_log       = ''
+    EXCEPTIONS
+      cts_initialization_failure  = 1
+      enqueue_failed              = 2
+      no_authorization            = 3
+      invalid_request             = 4
+      request_already_released    = 5
+      repeat_too_early            = 6
+      object_lock_error           = 7
+      object_check_error          = 8
+      docu_missing                = 9
+      db_access_error             = 10
+      action_aborted_by_user      = 11
+      export_failed               = 12
+      execute_objects_check       = 13
+      release_in_bg_mode          = 14
+      release_in_bg_mode_w_objchk = 15
+      error_in_export_methods     = 16
+      object_lang_error           = 17.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+          WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4  .
+  ELSE.
+    DO 10 TIMES.
+      WAIT UP TO 1 SECONDS.
+      SELECT SINGLE * FROM e070
+        WHERE trkorr = header-trkorr AND
+              trstatus IN ('R','N').
+      IF sy-subrc = 0.
+        EXIT.
+      ENDIF.
+    ENDDO.
+  ENDIF.
+
+  CALL FUNCTION 'ZTRANSFER_REQUEST' DESTINATION c_dest
+    EXPORTING
+      trkorr         = header-trkorr
+      mandt          = p_mandt
+      defbf          = p_delbf
+      transmit       = p_trmit
+    IMPORTING
+      ev_tp_ret_code = retcode.
+  IF retcode <= 4.
+    IF p_delrq = ''.
+      MESSAGE s000(oo) WITH header-trkorr '传输成功' sy-datlo sy-timlo.
+    ELSE.
+      UPDATE e070 SET trstatus = 'D'
+        WHERE trkorr = header-trkorr.
+      COMMIT WORK.
+
+      CALL FUNCTION 'TR_DELETE_COMM'
+        EXPORTING
+          wi_dialog = ''
+          wi_trkorr = header-trkorr
+        EXCEPTIONS
+          OTHERS    = 1.
+      IF sy-subrc = 0.
+        MESSAGE s000(oo) WITH header-trkorr '传输成功并且已删除本地副本请求' sy-datlo sy-timlo.
+      ELSE.
+        MESSAGE s000(oo) WITH header-trkorr '传输成功但删除本地副本请求失败' DISPLAY LIKE 'W'.
+      ENDIF.
+    ENDIF.
+  ELSE.
+    MESSAGE s000(oo) WITH header-trkorr '传输失败，请查看日志' DISPLAY LIKE 'E'.
+  ENDIF.

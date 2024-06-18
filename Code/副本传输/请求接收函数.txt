@@ -1,0 +1,128 @@
+FUNCTION ztransfer_request.
+*"----------------------------------------------------------------------
+*"*"本地接口：
+*"  IMPORTING
+*"     VALUE(TRKORR) TYPE  TRKORR
+*"     VALUE(MANDT) TYPE  MANDT OPTIONAL
+*"     VALUE(DEFBF) TYPE  CHAR01 OPTIONAL
+*"     VALUE(TRANSMIT) TYPE  CHAR01 OPTIONAL
+*"  EXPORTING
+*"     VALUE(EV_TP_RET_CODE) LIKE  STPA-RETCODE
+*"     VALUE(EV_TP_ALOG) LIKE  STPA-FILE
+*"     VALUE(EV_TP_SLOG) LIKE  STPA-FILE
+*"     VALUE(EV_TP_PID) LIKE  STPA-PID
+*"     VALUE(EV_TPSTAT_KEY) TYPE  TMSTPKEY
+*"     VALUE(ES_EXCEPTION) LIKE  STMSCALERT STRUCTURE  STMSCALERT
+*"----------------------------------------------------------------------
+
+  DATA: system LIKE tmscsys-sysnam .
+  DATA: et_tp_imports TYPE stms_tp_imports.
+  DATA: lt_sys TYPE TABLE OF tmscsys WITH HEADER LINE.
+  DATA: ls_tp_trque  TYPE stms_tp_trque,
+        ls_tp_remque TYPE stms_tp_remque.
+
+
+  IF mandt IS INITIAL.
+    mandt = sy-mandt.
+  ENDIF.
+
+  system = sy-sysid.
+  CALL FUNCTION 'TMS_MGR_FORWARD_TR_REQUEST'
+    EXPORTING
+      iv_request      = trkorr
+      iv_target       = system
+      iv_tardom       = ''
+      iv_tarcli       = ''
+      iv_source       = system
+      iv_srcdom       = ''
+      iv_import_again = 'X'
+      iv_monitor      = 'X'
+      iv_verbose      = ''
+    EXCEPTIONS
+      OTHERS          = 99.
+
+  IF transmit = 'X'.
+    CALL FUNCTION 'TMS_CFG_READ_CONFIGURATION'
+      EXPORTING
+        iv_local_domain       = 'X'
+        iv_local_non_abap_sys = 'X'
+      TABLES
+        tt_sys                = lt_sys
+      EXCEPTIONS
+        OTHERS                = 99.
+    READ TABLE lt_sys WITH KEY sysnam = system.
+
+    CALL FUNCTION 'TMS_MGR_TRANSMIT_TR_QUEUE'
+      EXPORTING
+        iv_tar_sys         = system
+        iv_ext_grp         = ''
+        iv_monitor         = ''
+      CHANGING
+        cs_tp_trque        = ls_tp_trque
+      EXCEPTIONS
+        read_config_failed = 1
+        OTHERS             = 99.
+    LOOP AT ls_tp_trque-remque INTO ls_tp_remque.
+      IF ls_tp_remque-alert-id <> ''.
+        DELETE ls_tp_trque-remque.
+      ENDIF.
+    ENDLOOP.
+
+    IF ls_tp_trque-requests <> 0.
+      CALL FUNCTION 'TMS_MGR_TRANSMIT_TR_QUEUE'
+        EXPORTING
+          iv_tar_sys         = system
+          iv_tar_dom         = lt_sys-domnam
+          iv_read_only       = ''
+          iv_use_list        = 'X'
+          iv_monitor         = ''
+          iv_verbose         = ''
+        CHANGING
+          cs_tp_trque        = ls_tp_trque
+        EXCEPTIONS
+          read_config_failed = 1
+          OTHERS             = 99.
+    ENDIF.
+  ENDIF.
+
+  CALL FUNCTION 'TMS_MGR_IMPORT_TR_REQUEST'
+    EXPORTING
+      iv_system                  = system
+      iv_request                 = trkorr
+      iv_client                  = mandt
+      iv_overtake                = 'X'
+      iv_import_again            = 'X'
+      iv_ignore_originality      = 'X'
+      iv_ignore_repairs          = 'X'
+      iv_ignore_transtype        = 'X'
+      iv_ignore_tabletype        = 'X'
+      iv_ignore_predec           = 'X'
+      iv_subset                  = 'X'
+      iv_offline                 = ''
+    IMPORTING
+      ev_tp_ret_code             = ev_tp_ret_code
+      ev_tp_alog                 = ev_tp_alog
+      ev_tp_slog                 = ev_tp_slog
+      ev_tp_pid                  = ev_tp_pid
+      ev_tpstat_key              = ev_tpstat_key
+      es_exception               = es_exception
+      et_tp_imports              = et_tp_imports
+    EXCEPTIONS
+      read_config_failed         = 1
+      table_of_requests_is_empty = 2
+      OTHERS                     = 3.
+
+  IF defbf = 'X'.
+    CALL FUNCTION 'TMS_MGR_MAINTAIN_TR_QUEUE'
+      EXPORTING
+        iv_command = 'DELFROMBUFFER'
+        iv_system  = system
+        iv_domain  = ''
+        iv_request = trkorr
+        iv_tarcli  = ''
+        iv_monitor = 'X'
+        iv_verbose = ''
+      EXCEPTIONS
+        OTHERS     = 99.
+  ENDIF.
+ENDFUNCTION.
