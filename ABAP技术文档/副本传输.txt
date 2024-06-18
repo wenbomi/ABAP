@@ -1,14 +1,14 @@
 *&---------------------------------------------------------------------*
 *& Report ZTRANSTASK
 *&---------------------------------------------------------------------*
-*&
+*& 
 *&---------------------------------------------------------------------*
 REPORT ztranstask NO STANDARD PAGE HEADING.
 TYPE-POOLS: trwbo.
 TABLES: e070,sscrfields,rfcdes.
 CONSTANTS: c_targ TYPE tr_target VALUE 'QAS',
            c_clnt TYPE mandt     VALUE '600',
-           c_dest TYPE rfcdest   VALUE 'DEV_100@QAS_600'.
+           c_dest TYPE rfcdest   VALUE 'DEV_100@QAS_600'. "参考创建技术文档RFC
 DATA: tr_text TYPE as4text.
 DATA: header  TYPE trwbo_request_header.
 DATA: retcode TYPE stpa-retcode.
